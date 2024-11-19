@@ -1,106 +1,174 @@
+/* This code is desgined by Dushyant singh
+ *  You can follow me on Github for more such IoT and AI content: Github/@dushyantsingh-ds
+ */
+ 
 #include <ESP8266WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include "secrets.h"  // Ensure this file contains AWS_CERT_CA, AWS_CERT_CRT, and AWS_CERT_PRIVATE as strings
-#include <WiFiUdp.h>
-#include <NTPClient.h>
-
-// Set up WiFiClientSecure
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP);
-BearSSL::WiFiClientSecure net;
-PubSubClient client(net);
-
+#include <time.h>
+#include "Secrets.h"
+#include <DHT.h>
+ 
+#define DHTPIN 2        // Digital pin connected to the DHT sensor
+#define DHTTYPE DHT11   // DHT 11
+ 
+DHT dht(DHTPIN, DHTTYPE);
+ 
+float h ;
+float t;
 unsigned long lastMillis = 0;
+unsigned long previousMillis = 0;
+const long interval = 5000;
+ 
+#define AWS_IOT_PUBLISH_TOPIC   "ESP8266_AWSDB/pub"
+#define AWS_IOT_SUBSCRIBE_TOPIC "ESP8266_AWSDB/sub" 
 
-void connectWiFi() {
-  Serial.print("Connecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
+ 
+WiFiClientSecure net;
+ 
+BearSSL::X509List cert(cacert);
+BearSSL::X509List client_crt(client_cert);
+BearSSL::PrivateKey key(privkey);
+ 
+PubSubClient client(net);
+ 
+time_t now;
+time_t nowish = 1510592825;
+struct tm timeinfo;
+ 
+void NTPConnect(void)
+{
+  Serial.begin(300);
+  Serial.print("Setting time using SNTP");
+  configTime(TIME_ZONE * 3600, 0 * 3600, "pool.ntp.org", "time.nist.gov");
+  now = time(nullptr);
+  while (now < nowish)
+  {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println("done!");
+
+  gmtime_r(&now, &timeinfo);
+  Serial.print("Current time: ");
+  Serial.print(asctime(&timeinfo));
+}
+ 
+ 
+void messageReceived(char *topic, byte *payload, unsigned int length)
+{
+  Serial.print("Received [");
+  Serial.print(topic);
+  Serial.print("]: ");
+  for (int i = 0; i < length; i++)
+  {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+}
+ 
+ 
+void connectAWS()
+{
+  delay(3000);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+ Serial.println("Project by:");
+ Serial.println("Github/dushyantsingh-ds");
+  Serial.println(String("Attempting to connect to SSID: ") + String(WIFI_SSID));
+ 
+  while (WiFi.status() != WL_CONNECTED)
+  {
     Serial.print(".");
     delay(1000);
   }
-  Serial.println("\nWiFi connected!");
-}
-
-void connectMQTT() {
-  Serial.print("Connecting to MQTT...");
-  int retryCount = 0;
-  while (!client.connected() && retryCount < 5) {
-    if (client.connect("ESP8266Client")) {  // Use a unique client ID
-      Serial.println("\nMQTT connected!");
-    } else {
-      Serial.print(".");
-      delay(1000);
-      retryCount++;
-    }
+ 
+  NTPConnect();
+ 
+  net.setTrustAnchors(&cert);
+  net.setClientRSACert(&client_crt, &key);
+ 
+  client.setServer(MQTT_HOST, 8883);
+  client.setCallback(messageReceived);
+ 
+ 
+  Serial.println("Connecting to AWS IOT");
+ 
+  while (!client.connect(THINGNAME))
+  {
+    Serial.print(".");
+    delay(1000);
   }
+ 
   if (!client.connected()) {
-    Serial.println("\nFailed to connect to MQTT. Restarting...");
-    ESP.restart();
+    Serial.println("AWS IoT Timeout!");
+    return;
   }
+  // Subscribe to a topic
+  client.subscribe(AWS_IOT_SUBSCRIBE_TOPIC);
+ 
+  Serial.println("AWS IoT Connected!");
 }
-
-void setup() {
-  Serial.begin(115200);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  connectWiFi();
-
-  // Configure SSL/TLS certificates
-  net.setTrustAnchors(new BearSSL::X509List(AWS_CERT_CA));
-  net.setClientRSACert(new BearSSL::X509List(AWS_CERT_CRT), new BearSSL::PrivateKey(AWS_CERT_PRIVATE));
-
-  timeClient.begin();
-  client.setServer(AWS_IOT_ENDPOINT, 8883);
-
-  connectMQTT();
+ 
+ 
+void publishMessage()
+{
+  StaticJsonDocument<200> doc;
+  doc["TimeStamp"] = asctime(&timeinfo);
+  doc["Humidity"] = h;
+  doc["Temperature"] = t;
+  char jsonBuffer[512];
+  serializeJson(doc, jsonBuffer); // print to client
+ 
+  client.publish(AWS_IOT_PUBLISH_TOPIC, jsonBuffer);
 }
-
-void loop() {
-  client.loop();
-
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWiFi();
+ 
+ 
+void setup()
+{
+  Serial.begin(300);
+  connectAWS();
+  dht.begin();
+}
+ 
+ 
+void loop()
+{
+  // h = dht.readHumidity();
+  // t = dht.readTemperature();
+  h = 10;
+  t = 50;
+ 
+  if (isnan(h) || isnan(t) )  // Check if any reads failed and exit early (to try again).
+  {
+    Serial.println(F("Failed to read from DHT sensor!"));
+    return;
   }
-
-  if (!client.connected()) {
-    connectMQTT();
+ 
+  Serial.print("Current time: ");
+  Serial.print(asctime(&timeinfo));
+  Serial.print(F("Humidity: "));
+  Serial.print(h);
+  Serial.print(F("%  Temperature: "));
+  Serial.print(t);
+  Serial.println(F("°C "));
+  delay(2000);
+ 
+  now = time(nullptr);
+ 
+  if (!client.connected())
+  {
+    connectAWS();
   }
-
-  if (!timeClient.update()) {
-    Serial.println("Failed to update time. Retrying...");
-    delay(500);
-  }
-
-  if (millis() - lastMillis > 5000) {
-    lastMillis = millis();
-
-    StaticJsonDocument<256> doc;
-    doc["timestamp"] = timeClient.getEpochTime();
-    doc["source"] = "solar";
-    String weather = random(0, 2) ? "sunny" : "normal";
-    doc["weather"] = weather;
-    doc["units_produced"] = (weather == "sunny") ? random(80, 100) : random(10, 50);
-
-    char jsonBuffer[512];
-    serializeJson(doc, jsonBuffer);
-
-    if (client.publish("energy/production", jsonBuffer)) {
-      Serial.println("Published production data.");
-    } else {
-      Serial.println("Failed to publish production data.");
-    }
-
-    doc.clear();
-
-    doc["timestamp"] = timeClient.getEpochTime();
-    doc["units_consumed"] = random(1, 30);
-
-    serializeJson(doc, jsonBuffer);
-
-    if (client.publish("energy/consumption", jsonBuffer)) {
-      Serial.println("Published consumption data.");
-    } else {
-      Serial.println("Failed to publish consumption data.");
+  else
+  {
+    client.loop();
+    if (millis() - lastMillis > 5000)
+    {
+      lastMillis = millis();
+      publishMessage();
     }
   }
 }
